@@ -1,0 +1,185 @@
+# Miscellaneous
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+.atom/
+.build/
+.buildlog/
+.history
+.svn/
+.swiftpm/
+migrate_working_dir/
+
+# IntelliJ related
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# Flutter/Dart/Pub related
+**/doc/api/
+**/ios/Flutter/.last_build_id
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+/build/
+/coverage/
+pubspec.lock
+
+# Symbolication related
+app.*.symbols
+
+# Obfuscation related
+app.*.map.json
+
+# Android Studio will place build artifacts here
+/android/app/debug
+/android/app/profile
+/android/app/release
+
+# Android Build Files
+/android/.gradle/
+/android/.idea/
+/android/local.properties
+/android/captures/
+/android/build/
+/android/app/build/
+/android/app/.cxx/
+/android/app/src/main/cpp/build/
+*.apk
+*.ap_
+*.dex
+*.so
+*.o
+*.a
+
+# iOS Build Files
+/ios/Pods/
+/ios/.symlinks/
+/ios/Flutter/Flutter.framework
+/ios/Flutter/Flutter.podspec
+/ios/Runner.xcworkspace/
+/ios/Runner.xcodeproj/project.xcworkspace/
+/ios/Flutter/Generated.xcconfig
+/ios/Flutter/flutter_export_environment.sh
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# macOS Build Files
+/macos/Pods/
+/macos/Flutter/ephemeral/
+/macos/Flutter/GeneratedPluginRegistrant.swift
+
+# Windows Build Files
+/windows/flutter/ephemeral/
+
+# Linux Build Files
+/linux/flutter/ephemeral/
+
+# Web Build Files
+/web/
+
+# Firebase
+/android/app/google-services.json
+/ios/Runner/GoogleService-Info.plist
+/ios/firebase_app_id_file.json
+firebase_options.dart
+
+# Secrets & Keys
+*.key
+*.keystore
+*.jks
+*.p12
+*.pem
+*.cert
+/android/key.properties
+aes_key.bin
+aes_iv.bin
+*.env
+.env.*
+
+# Database Files
+*.db
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
+
+# Native Build Files (C++)
+*.exe
+*.out
+*.app
+*.obj
+*.lib
+*.dll
+*.dylib
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+
+# Backup Files
+*.bak
+*.backup
+*.old
+*~
+*.swp
+*.swo
+
+# Temporary Files
+tmp/
+temp/
+*.tmp
+.cache/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS Generated Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# Test & Coverage
+test/coverage/
+coverage/
+*.lcov
+*.info
+
+# Documentation Generation
+/doc/
+/docs/.vitepress/cache/
+
+# Node Modules (if any)
+node_modules/
+package-lock.json
+
+# Generated Files
+*.g.dart
+*.freezed.dart
+*.gr.dart
+
+# Local Configuration
+local.properties
+.flutter-plugins-dependencies

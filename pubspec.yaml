@@ -1,0 +1,38 @@
+name: SECUREFLOW
+description: Advanced Password Manager with Firebase Cloud Sync
+
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.2
+  local_auth: ^2.1.7
+  flutter_secure_storage: ^9.0.0
+  shared_preferences: ^2.2.2
+  provider: ^6.1.1
+  url_launcher: ^6.1.0
+  http: ^1.1.0
+  crypto: ^3.0.3
+  encrypt: ^5.0.1
+
+  # Firebase - Compatible versions that work together
+  firebase_core: ^2.24.0
+  firebase_auth: ^4.17.3
+  cloud_firestore: ^4.9.3
+
+  # Remove pointycastle since we're using encrypt package
+  # pointycastle: ^3.7.3
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
