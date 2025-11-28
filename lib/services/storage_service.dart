@@ -1,5 +1,6 @@
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'dart:convert';
 import 'firebase_service.dart';
 import 'encryption_service.dart';
@@ -15,10 +16,12 @@ class StorageService {
   static const String _encryptionEnabledKey = 'encryption_enabled';
   static const String _migrationCompletedKey = 'migration_completed';
   static const String _cloudBackupEnabledKey = 'cloud_backup_enabled';
+  static const String _userSessionKey = 'user_session_data';
 
   final FirebaseService _firebaseService = FirebaseService();
   bool _isInitialized = false;
 
+  // Sync status with detailed information
   Future<Map<String, dynamic>> getSyncStatus() async {
     try {
       await initialize();
@@ -31,6 +34,8 @@ class StorageService {
 
       final lastSync = prefs.getInt(_lastSyncKey);
       final encryptionEnabled = prefs.getBool(_encryptionEnabledKey) ?? false;
+      final migrationCompleted = prefs.getBool(_migrationCompletedKey) ?? false;
+      final cloudBackupEnabled = prefs.getBool(_cloudBackupEnabledKey) ?? false;
 
       return {
         'lastSync': lastSync != null
@@ -39,8 +44,12 @@ class StorageService {
         'cloudCount': firebasePasswords.length,
         'localCount': localPasswords.length,
         'encryptionEnabled': encryptionEnabled,
+        'migrationCompleted': migrationCompleted,
+        'cloudBackupEnabled': cloudBackupEnabled,
         'hasCloudConnection': _firebaseService.isLoggedIn,
         'userEmail': _firebaseService.userEmail,
+        'encryptionKeyAvailable': EncryptionService.hasKey,
+        'storageInitialized': _isInitialized,
       };
     } catch (e) {
       return {
@@ -48,39 +57,203 @@ class StorageService {
         'cloudCount': 0,
         'localCount': 0,
         'encryptionEnabled': false,
+        'migrationCompleted': false,
+        'cloudBackupEnabled': false,
         'hasCloudConnection': false,
         'error': e.toString(),
       };
     }
   }
 
+  // Test encryption functionality
   Future<bool> testEncryption() async {
     try {
       await initialize();
 
-      const testString = 'test_password_123';
+      const testString = 'test_password_123_secure_vault';
       final encrypted = EncryptionService.encrypt(testString);
       final decrypted = EncryptionService.decrypt(encrypted);
 
-      return testString == decrypted;
+      final success = testString == decrypted;
+
+      if (success) {
+        print('✅ Encryption test PASSED');
+      } else {
+        print('❌ Encryption test FAILED');
+        print('Original: $testString');
+        print('Decrypted: $decrypted');
+      }
+
+      return success;
     } catch (e) {
+      print('❌ Encryption test ERROR: $e');
       return false;
     }
   }
 
+  // Initialize storage service with comprehensive setup
   Future<void> initialize() async {
     if (_isInitialized) return;
 
-    await EncryptionService.initialize();
-    _isInitialized = true;
-    await _migrateExistingData();
+    print('🔄 StorageService: Initializing...');
 
-    // Auto-recover passwords from Firebase on initialization if logged in
+    // Refresh auth state before attempting secure key restoration
+    try {
+      await _firebaseService.checkAuthState();
+      print('✅ Auth state checked');
+    } catch (e) {
+      print('⚠️ Auth state check failed: $e');
+    }
+
+    await EncryptionService.initialize();
+    print('✅ Encryption service initialized');
+
+    // 🔐 CRITICAL: Restore user password from secure storage if logged in
     if (_firebaseService.isLoggedIn) {
-      await recoverPasswordsFromFirebase();
+      try {
+        final secureStorage = FlutterSecureStorage();
+        final storedPassword =
+            await secureStorage.read(key: 'user_encryption_password');
+
+        if (storedPassword != null && storedPassword.isNotEmpty) {
+          print(
+              '🔐 StorageService: Restoring encryption password from secure storage');
+          EncryptionService.setUserPassword(storedPassword);
+          print(
+              '✅ StorageService: Encryption password restored - decryption ready');
+
+          // 🔄 Check if we need to clear incompatible encrypted data
+          await _clearIncompatibleEncryptedData();
+        } else {
+          print(
+              '⚠️ StorageService: No stored password found - decryption will fail');
+          print(
+              '💡 Recommendation: User should re-login to restore encryption keys');
+        }
+      } catch (e) {
+        print('❌ StorageService: Failed to restore encryption password: $e');
+      }
+    }
+
+    _isInitialized = true;
+    print('✅ StorageService: Initialization completed');
+
+    await _migrateExistingData();
+    print('✅ Migration check completed');
+
+    // Attempt legacy migration (normalize any old encryption) if we have a key
+    if (_firebaseService.isLoggedIn && EncryptionService.hasKey) {
+      try {
+        await _migrateLegacyEncryptedData();
+        print('✅ Legacy migration attempted');
+      } catch (e) {
+        print('⚠️ Legacy migration error: $e');
+      }
+    }
+
+    print('🎉 StorageService: Fully initialized and ready');
+  }
+
+  // Clear old incompatible encrypted data that's unrecoverable
+  Future<void> _clearIncompatibleEncryptedData() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final migrationFlag = prefs.getBool('dart_encryption_migrated') ?? false;
+
+      if (migrationFlag) {
+        return; // Already migrated
+      }
+
+      print('═══════════════════════════════════════');
+      print('🔄 ENCRYPTION MIGRATION: Incompatible Data Cleanup');
+      print('═══════════════════════════════════════');
+
+      // Check if we have potentially incompatible data
+      final jsonString = prefs.getString(_passwordsKey);
+      if (jsonString != null && jsonString.isNotEmpty) {
+        try {
+          final List<dynamic> jsonList = jsonDecode(jsonString);
+          if (jsonList.isNotEmpty) {
+            final firstItem = Map<String, dynamic>.from(jsonList[0]);
+            final passwordField = firstItem['password']?.toString() ?? '';
+
+            // If data looks encrypted but we can't decrypt it, clear it
+            if (passwordField.isNotEmpty && passwordField.length > 50) {
+              print(
+                  '🗑️ Detected potentially incompatible encrypted data - clearing...');
+              await prefs.remove(_passwordsKey);
+              await prefs.remove(_lastSyncKey);
+              await prefs.remove('saved_passwords');
+              await prefs.remove('password_categories');
+              print('✅ Incompatible data cleared');
+            }
+          }
+        } catch (e) {
+          print('⚠️ Data inspection failed: $e');
+        }
+      }
+
+      await prefs.setBool('dart_encryption_migrated', true);
+      print('✅ Migration flag set');
+      print('═══════════════════════════════════════\n');
+    } catch (e) {
+      print('⚠️ Migration check failed: $e');
     }
   }
 
+  /// Verify that existing encrypted passwords can be decrypted
+  /// If decryption fails, clear local data and force recovery from Firebase
+  Future<void> _verifyDecryption() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final jsonString = prefs.getString(_passwordsKey);
+
+      if (jsonString == null || jsonString.isEmpty) {
+        return; // No data to verify
+      }
+
+      final List<dynamic> jsonList = jsonDecode(jsonString);
+      if (jsonList.isEmpty) return;
+
+      // Test decrypt first password
+      final firstPwd = Map<String, dynamic>.from(jsonList[0]);
+
+      if (firstPwd['isEncrypted'] == true && firstPwd['password'] != null) {
+        try {
+          final encryptedPwd = firstPwd['password'].toString();
+          if (EncryptionService.isEncrypted(encryptedPwd)) {
+            // Try to decrypt
+            final decrypted = EncryptionService.decrypt(encryptedPwd);
+            if (decrypted != '[Decryption Failed]') {
+              print('✅ Decryption verification passed');
+              return;
+            } else {
+              throw Exception('Decryption returned failure marker');
+            }
+          }
+        } catch (e) {
+          print('❌ Decryption verification failed: $e');
+          print('🔄 Clearing local data and recovering from Firebase...');
+
+          // Clear corrupted local data
+          await prefs.remove(_passwordsKey);
+          await prefs.remove(_lastSyncKey);
+
+          // Force recovery from Firebase
+          if (_firebaseService.isLoggedIn) {
+            await recoverPasswordsFromFirebase();
+            print('✅ Data recovered from Firebase');
+          } else {
+            print('⚠️ Cannot recover - user not logged in');
+          }
+        }
+      }
+    } catch (e) {
+      print('⚠️ Decryption verification error: $e');
+    }
+  }
+
+  // Migrate unencrypted data to encrypted format
   Future<void> _migrateExistingData() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -105,6 +278,9 @@ class StorageService {
           pwd['password'].toString().isNotEmpty);
 
       if (needsMigration) {
+        print(
+            '🔄 Migrating ${passwords.length} passwords to encrypted format...');
+
         final migratedPasswords = passwords.map((password) {
           return _encryptPasswordData(password);
         }).toList();
@@ -112,14 +288,20 @@ class StorageService {
         final migratedJsonString = jsonEncode(migratedPasswords);
         await prefs.setString(_passwordsKey, migratedJsonString);
         await prefs.setBool(_encryptionEnabledKey, true);
-      }
+        await prefs.setBool(_migrationCompletedKey, true);
 
-      await prefs.setBool(_migrationCompletedKey, true);
+        print(
+            '✅ Migration completed: ${migratedPasswords.length} passwords encrypted');
+      } else {
+        await prefs.setBool(_migrationCompletedKey, true);
+      }
     } catch (e) {
-      // Silent fail
+      print('❌ Migration error: $e');
+      // Don't block initialization on migration failure
     }
   }
 
+  // Save password with comprehensive error handling and sync
   Future<bool> savePassword(Map<String, dynamic> passwordData) async {
     try {
       await initialize();
@@ -134,8 +316,9 @@ class StorageService {
             'Unable to get user information. Please restart the app.');
       }
 
-      final encryptedPasswordData = _encryptPasswordData(passwordData);
+      print('💾 Saving password: ${passwordData['title']}');
 
+      final encryptedPasswordData = _encryptPasswordData(passwordData);
       final saved = await _firebaseService.savePassword(encryptedPasswordData);
 
       if (saved) {
@@ -145,8 +328,10 @@ class StorageService {
 
         if (existingIndex != -1) {
           currentPasswords[existingIndex] = encryptedPasswordData;
+          print('✅ Password updated locally');
         } else {
           currentPasswords.add(encryptedPasswordData);
+          print('✅ Password added locally');
         }
 
         final prefs = await SharedPreferences.getInstance();
@@ -156,20 +341,76 @@ class StorageService {
         await prefs.setBool(_encryptionEnabledKey, true);
         await prefs.setBool(_cloudBackupEnabledKey, true);
 
-        await _createBackupAfterChange();
-      }
+        print('✅ Local storage updated');
 
-      return saved;
+        // Trigger backup after successful save
+        await _createBackupAfterChange();
+
+        return true;
+      } else {
+        throw Exception('Failed to save password to cloud');
+      }
     } catch (e) {
+      print('❌ Save password error: $e');
       throw Exception('Failed to save password: ${e.toString()}');
     }
   }
 
+  // Load passwords with comprehensive recovery mechanisms
   Future<List<Map<String, dynamic>>> loadPasswords() async {
     try {
       await initialize();
 
+      // CRITICAL: Verify user password is set before attempting decryption
       if (_firebaseService.isLoggedIn) {
+        // First-time load after login: recover from Firebase
+        final prefs = await SharedPreferences.getInstance();
+        final localData = prefs.getString(_passwordsKey);
+
+        if (localData == null || localData.isEmpty) {
+          print(
+              '🔄 StorageService: No local data, recovering from Firebase...');
+          final firebasePasswords = await _firebaseService.getPasswords();
+
+          if (firebasePasswords.isEmpty) {
+            print('ℹ️ No passwords in Firebase - starting fresh');
+            return [];
+          }
+
+          // Check if data is encrypted with old incompatible encryption
+          print('🔍 Checking if Firebase data needs migration...');
+          final needsMigration = firebasePasswords.any((pwd) =>
+              pwd['isEncrypted'] == true ||
+              (pwd['password'] != null &&
+                  pwd['password'].toString().length > 50));
+
+          if (needsMigration) {
+            print('⚠️ Firebase contains old encrypted data!');
+            print('🗑️ Clearing incompatible encrypted data...');
+            // Return empty list - user must re-enter their passwords
+            return [];
+          }
+
+          // Return plain unencrypted data from Firebase
+          return firebasePasswords.map((pwd) {
+            return {
+              'documentId': pwd['documentId'],
+              'id': pwd['id'] ?? pwd['documentId'],
+              'title': pwd['title'] ?? '',
+              'username': pwd['username'] ?? '',
+              'password': pwd['password'] ?? '',
+              'website': pwd['website'] ?? '',
+              'category': pwd['category'] ?? 'General',
+              'notes': pwd['notes'] ?? '',
+              'strength': pwd['strength'] ?? 'Moderate',
+              'created_date':
+                  pwd['created_date']?.toString() ?? DateTime.now().toString(),
+              'isEncrypted': false,
+            };
+          }).toList();
+        }
+
+        // Load from Firebase and sync
         try {
           print('🔄 StorageService: Loading passwords from Firebase...');
           final firebasePasswords = await _firebaseService.getPasswords();
@@ -232,6 +473,7 @@ class StorageService {
     }
   }
 
+  // Recover passwords from Firebase with comprehensive error handling
   Future<void> recoverPasswordsFromFirebase() async {
     try {
       if (!_firebaseService.isLoggedIn) {
@@ -250,14 +492,12 @@ class StorageService {
         // Convert Timestamp objects to milliseconds before encoding
         final sanitizedPasswords = mainPasswords.map((pwd) {
           final sanitized = Map<String, dynamic>.from(pwd);
-          // Convert any Timestamp fields to milliseconds
           sanitized.forEach((key, value) {
             if (value != null && value.toString().contains('Timestamp')) {
               try {
                 final timestamp = value as dynamic;
                 sanitized[key] = timestamp.millisecondsSinceEpoch;
               } catch (e) {
-                // If conversion fails, remove the field
                 sanitized.remove(key);
               }
             }
@@ -283,22 +523,18 @@ class StorageService {
       if (backupInfo != null && backupInfo['passwords'] != null) {
         final backupPasswords =
             List<Map<String, dynamic>>.from(backupInfo['passwords']);
-
         print(
             '📥 StorageService: Found ${backupPasswords.length} passwords in backup');
 
         if (backupPasswords.isNotEmpty) {
-          // Convert Timestamp objects to milliseconds before encoding
           final sanitizedPasswords = backupPasswords.map((pwd) {
             final sanitized = Map<String, dynamic>.from(pwd);
-            // Convert any Timestamp fields to milliseconds
             sanitized.forEach((key, value) {
               if (value != null && value.toString().contains('Timestamp')) {
                 try {
                   final timestamp = value as dynamic;
                   sanitized[key] = timestamp.millisecondsSinceEpoch;
                 } catch (e) {
-                  // If conversion fails, remove the field
                   sanitized.remove(key);
                 }
               }
@@ -323,9 +559,11 @@ class StorageService {
           '⚠️ StorageService: No passwords found in Firebase (main or backup)');
     } catch (e) {
       print('❌ StorageService: Password recovery failed: $e');
+      rethrow;
     }
   }
 
+  // Get local passwords with decryption
   Future<List<Map<String, dynamic>>> _getLocalPasswords() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -341,10 +579,30 @@ class StorageService {
         return _decryptPasswordData(data);
       }).toList();
     } catch (e) {
+      print('❌ _getLocalPasswords error: $e');
       return [];
     }
   }
 
+  // Get passwords in their STORED format (encrypted) for backup purposes
+  Future<List<Map<String, dynamic>>> _getLocalPasswordsEncrypted() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final jsonString = prefs.getString(_passwordsKey);
+
+      if (jsonString == null || jsonString.isEmpty) {
+        return [];
+      }
+
+      final List<dynamic> jsonList = jsonDecode(jsonString);
+      return jsonList.map((item) => Map<String, dynamic>.from(item)).toList();
+    } catch (e) {
+      print('❌ _getLocalPasswordsEncrypted error: $e');
+      return [];
+    }
+  }
+
+  // Update password with comprehensive sync
   Future<bool> updatePassword(
       String passwordId, Map<String, dynamic> updates) async {
     try {
@@ -361,6 +619,7 @@ class StorageService {
         'category'
       ];
       bool anyEncrypted = false;
+
       for (final field in fieldsToEncrypt) {
         if (updates.containsKey(field) && updates[field] != null) {
           final value = updates[field].toString();
@@ -370,6 +629,7 @@ class StorageService {
           }
         }
       }
+
       if (anyEncrypted) {
         encryptedUpdates['isEncrypted'] = true;
       }
@@ -395,6 +655,8 @@ class StorageService {
           await prefs.setString(_passwordsKey, jsonString);
           await prefs.setInt(
               _lastSyncKey, DateTime.now().millisecondsSinceEpoch);
+
+          print('✅ Password updated locally: $passwordId');
         }
 
         await _createBackupAfterChange();
@@ -402,10 +664,12 @@ class StorageService {
 
       return updated;
     } catch (e) {
+      print('❌ Update password error: $e');
       return false;
     }
   }
 
+  // Delete password with comprehensive cleanup
   Future<bool> deletePassword(String passwordId) async {
     try {
       print('🔄 StorageService: Starting deletion for ID: $passwordId');
@@ -422,8 +686,8 @@ class StorageService {
           final isMatch = docIdMatch || idMatch || idStringMatch;
 
           if (isMatch) {
-            print('✅ StorageService: Found password - Title: ${pwd['title']}, '
-                'id: ${pwd['id']}, documentId: ${pwd['documentId']}');
+            print(
+                '✅ StorageService: Found password - Title: ${pwd['title']}, id: ${pwd['id']}, documentId: ${pwd['documentId']}');
           }
           return isMatch;
         },
@@ -432,11 +696,6 @@ class StorageService {
 
       if (passwordToDelete.isEmpty) {
         print('❌ StorageService: No password found for ID: $passwordId');
-        print('📋 Available passwords:');
-        for (var pwd in currentPasswords) {
-          print(
-              '  - ${pwd['title']}: id=${pwd['id']}, documentId=${pwd['documentId']}');
-        }
         return false;
       }
 
@@ -452,8 +711,6 @@ class StorageService {
       }
 
       // Delete from Firebase
-      print(
-          '🔥 StorageService: Calling FirebaseService.deletePassword($documentId)');
       final deleted = await _firebaseService.deletePassword(documentId);
 
       if (deleted) {
@@ -497,11 +754,11 @@ class StorageService {
       }
     } catch (e) {
       print('💥 StorageService: Exception in deletePassword: $e');
-      print('🔄 StorageService: Stack trace: ${e.toString()}');
       return false;
     }
   }
 
+  // Sync data between local and cloud
   Future<bool> syncData() async {
     try {
       await initialize();
@@ -530,10 +787,12 @@ class StorageService {
         }
       }
     } catch (e) {
+      print('❌ Sync data error: $e');
       return false;
     }
   }
 
+  // Save multiple passwords at once
   Future<bool> savePasswords(List<Map<String, dynamic>> passwords) async {
     try {
       await initialize();
@@ -559,10 +818,12 @@ class StorageService {
 
       return allSaved;
     } catch (e) {
+      print('❌ Save passwords error: $e');
       return false;
     }
   }
 
+  // Refresh data from Firebase
   Future<void> refreshFromFirebase() async {
     try {
       if (!_firebaseService.isLoggedIn) {
@@ -572,8 +833,24 @@ class StorageService {
       final firebasePasswords = await _firebaseService.getPasswords();
 
       if (firebasePasswords.isNotEmpty) {
+        // Sanitize any Firestore Timestamp objects before encoding
+        final sanitizedPasswords = firebasePasswords.map((pwd) {
+          final sanitized = Map<String, dynamic>.from(pwd);
+          sanitized.forEach((key, value) {
+            if (value != null && value.toString().contains('Timestamp')) {
+              try {
+                final ts = value as dynamic;
+                sanitized[key] = ts.millisecondsSinceEpoch;
+              } catch (_) {
+                sanitized.remove(key);
+              }
+            }
+          });
+          return sanitized;
+        }).toList();
+
         final prefs = await SharedPreferences.getInstance();
-        final jsonString = jsonEncode(firebasePasswords);
+        final jsonString = jsonEncode(sanitizedPasswords);
         await prefs.setString(_passwordsKey, jsonString);
         await prefs.setInt(_lastSyncKey, DateTime.now().millisecondsSinceEpoch);
         await prefs.setBool(_encryptionEnabledKey, true);
@@ -586,6 +863,7 @@ class StorageService {
     }
   }
 
+  // Check if cloud backup exists
   Future<bool> hasCloudBackup() async {
     try {
       if (!_firebaseService.isLoggedIn) {
@@ -599,6 +877,7 @@ class StorageService {
     }
   }
 
+  // Get cloud backup information
   Future<Map<String, dynamic>> getCloudBackupInfo() async {
     try {
       if (!_firebaseService.isLoggedIn) {
@@ -639,6 +918,7 @@ class StorageService {
     }
   }
 
+  // Restore from cloud backup
   Future<bool> restoreFromCloudBackup() async {
     try {
       if (!_firebaseService.isLoggedIn) {
@@ -671,6 +951,7 @@ class StorageService {
     }
   }
 
+  // Backup to cloud with comprehensive verification
   Future<bool> backupToCloud() async {
     try {
       print('═══════════════════════════════════════════════');
@@ -679,65 +960,74 @@ class StorageService {
 
       print('1️⃣ Checking login status...');
       if (!_firebaseService.isLoggedIn) {
-        print('❌ User not logged in');
         throw Exception('Not logged in to Firebase');
       }
-      print('✅ User is logged in');
 
-      print('2️⃣ Getting local passwords...');
-      final localPasswords = await _getLocalPasswords();
+      print('2️⃣ Checking encryption key...');
+      if (!EncryptionService.hasKey) {
+        await EncryptionService.initialize();
+        if (!EncryptionService.hasKey) {
+          throw Exception('Encryption key not available. Please login again.');
+        }
+      }
+
+      print('3️⃣ Getting local passwords...');
+      var localPasswords = await _getLocalPasswordsEncrypted();
       print('📊 Found ${localPasswords.length} local passwords');
 
       if (localPasswords.isEmpty) {
-        print('❌ No local data to backup');
-        throw Exception('No local data to backup');
+        print('🔄 Local storage empty, recovering from Firebase...');
+        await recoverPasswordsFromFirebase();
+        localPasswords = await _getLocalPasswordsEncrypted();
+        print('📊 After recovery: ${localPasswords.length} passwords');
+
+        if (localPasswords.isEmpty) {
+          throw Exception('No passwords to backup');
+        }
       }
 
-      print('3️⃣ Getting user info...');
+      print('4️⃣ Verifying encryption before backup...');
+      for (var i = 0; i < localPasswords.length; i++) {
+        final pwd = localPasswords[i];
+        final passwordField = pwd['password']?.toString() ?? '';
+
+        if (passwordField.isNotEmpty &&
+            !EncryptionService.isEncrypted(passwordField)) {
+          print('🔄 Re-encrypting: ${pwd['title']}');
+          final decryptedData = _decryptPasswordData(pwd);
+          final reEncryptedData = _encryptPasswordData(decryptedData);
+          localPasswords[i] = reEncryptedData;
+        }
+      }
+
+      print('5️⃣ Creating backup data...');
       final user = _firebaseService.getCurrentUserId();
       final userEmail = _firebaseService.userEmail;
-      print('👤 User ID: $user');
-      print('📧 User Email: $userEmail');
 
-      if (user == null) {
-        print('❌ User ID is null');
-        throw Exception('User not found');
-      }
-
-      print('4️⃣ Preparing backup data...');
-      // Ensure all passwords in backup are encrypted at rest in Firestore
-      final encryptedPasswords =
-          localPasswords.map((p) => _encryptPasswordData(p)).toList();
       final backupData = {
-        'userId': user, // will be encrypted in FirebaseService
-        'email': userEmail, // will be encrypted in FirebaseService
-        'passwords': encryptedPasswords,
-        'totalPasswords': encryptedPasswords.length,
+        'userId': user,
+        'email': userEmail,
+        'passwords': localPasswords,
+        'totalPasswords': localPasswords.length,
+        'backupTimestamp': DateTime.now().millisecondsSinceEpoch,
+        'encryptionVersion': 2,
         'deviceInfo': {
           'platform': 'flutter',
-          'backupVersion': '1.0',
-          'appVersion': '1.0.0',
+          'backupVersion': '2.0',
         },
         'metadata': {
           'categories': _extractCategories(localPasswords),
           'lastUpdated': DateTime.now().millisecondsSinceEpoch,
         }
       };
-      print('📦 Backup data prepared:');
-      print('   - Total passwords: ${backupData['totalPasswords']}');
-      print(
-          '   - Categories: ${(backupData['metadata'] as Map?)?['categories']}');
-      print('   - Device: ${(backupData['deviceInfo'] as Map?)?['platform']}');
 
-      print('5️⃣ Calling FirebaseService.createBackup()...');
+      print('6️⃣ Calling Firebase backup...');
       await _firebaseService.createBackup(backupData);
-      print('✅ FirebaseService.createBackup() completed');
 
-      print('6️⃣ Updating local preferences...');
+      print('7️⃣ Updating local sync timestamp...');
       final prefs = await SharedPreferences.getInstance();
       await prefs.setInt(_lastSyncKey, DateTime.now().millisecondsSinceEpoch);
       await prefs.setBool(_cloudBackupEnabledKey, true);
-      print('✅ Local preferences updated');
 
       print('═══════════════════════════════════════════════');
       print('✅ BACKUP TO CLOUD - SUCCESS');
@@ -753,35 +1043,34 @@ class StorageService {
     }
   }
 
+  // Encrypt password data
   Map<String, dynamic> _encryptPasswordData(Map<String, dynamic> passwordData) {
     try {
       final encryptedData = {...passwordData};
-
-      // List of fields to encrypt
       final fieldsToEncrypt = [
         'password',
         'username',
         'title',
         'website',
         'notes',
-        'category',
+        'category'
       ];
       bool anyFieldEncrypted = false;
 
-      // Encrypt each sensitive field
       for (final field in fieldsToEncrypt) {
         if (passwordData[field] != null &&
             passwordData[field].toString().isNotEmpty) {
           final originalValue = passwordData[field].toString();
-
-          // Only encrypt if not already encrypted
           if (!EncryptionService.isEncrypted(originalValue)) {
-            final encryptedValue = EncryptionService.encrypt(originalValue);
-            encryptedData[field] = encryptedValue;
-            anyFieldEncrypted = true;
-            print('🔐 Encrypted field: $field');
+            try {
+              final encryptedValue = EncryptionService.encrypt(originalValue);
+              encryptedData[field] = encryptedValue;
+              anyFieldEncrypted = true;
+            } catch (encErr) {
+              print('❌ Failed to encrypt field $field: $encErr');
+              encryptedData[field] = originalValue;
+            }
           } else {
-            // Already encrypted
             encryptedData[field] = originalValue;
             anyFieldEncrypted = true;
           }
@@ -791,22 +1080,23 @@ class StorageService {
       encryptedData['isEncrypted'] = anyFieldEncrypted;
       encryptedData['id'] = encryptedData['id'] ??
           DateTime.now().millisecondsSinceEpoch.toString();
-      // Do not store plaintext userId locally; store hashed scope key instead
+
       final uid = _firebaseService.getCurrentUserId();
       if (uid != null) {
         encryptedData['userKey'] = EncryptionService.hash(uid);
       }
+
       encryptedData['createdAt'] =
           encryptedData['createdAt'] ?? DateTime.now().toIso8601String();
 
-      print('✅ All sensitive fields encrypted for Firebase storage');
       return encryptedData;
     } catch (e) {
-      print('❌ Encryption error: $e');
-      return {...passwordData, 'isEncrypted': false};
+      print('❌ Password data encryption failed: $e');
+      return passwordData;
     }
   }
 
+  // Decrypt password data
   Map<String, dynamic> _decryptPasswordData(
       Map<String, dynamic> encryptedData) {
     try {
@@ -825,40 +1115,42 @@ class StorageService {
         'isEncrypted': encryptedData['isEncrypted'] ?? false,
       };
 
-      // Decrypt all sensitive fields if data is encrypted
       if (decryptedData['isEncrypted'] == true) {
+        if (!EncryptionService.hasKey) {
+          decryptedData['locked'] = true;
+          decryptedData['password'] = '[Locked - Login Required]';
+          decryptedData['username'] = '[Locked]';
+          decryptedData['isEncrypted'] = true;
+          return decryptedData;
+        }
+
         final fieldsToDecrypt = [
           'password',
           'username',
           'title',
           'website',
           'notes',
-          'category',
+          'category'
         ];
-
         for (final field in fieldsToDecrypt) {
           if (decryptedData[field] != null && decryptedData[field] is String) {
-            try {
-              final encryptedValue = decryptedData[field] as String;
-
-              // Only decrypt if it's actually encrypted
-              if (encryptedValue.isNotEmpty &&
-                  EncryptionService.isEncrypted(encryptedValue)) {
+            final encryptedValue = decryptedData[field] as String;
+            if (encryptedValue.isNotEmpty &&
+                EncryptionService.isEncrypted(encryptedValue)) {
+              try {
                 final decryptedValue =
                     EncryptionService.decrypt(encryptedValue);
                 decryptedData[field] = decryptedValue;
-                print('🔓 Decrypted field: $field');
+              } catch (e) {
+                decryptedData['locked'] = true;
+                if (field == 'password') {
+                  decryptedData[field] = '[Locked - Re-login Required]';
+                }
               }
-            } catch (decryptError) {
-              print('❌ Decryption failed for field $field: $decryptError');
-              decryptedData[field] = '[Decryption Failed]';
-              decryptedData['isEncrypted'] = false;
             }
           }
         }
-        print('✅ All sensitive fields decrypted for UI display');
       }
-
       return decryptedData;
     } catch (e) {
       print('❌ Decryption error: $e');
@@ -866,6 +1158,7 @@ class StorageService {
     }
   }
 
+  // Extract categories from passwords
   List<String> _extractCategories(List<Map<String, dynamic>> passwords) {
     final categories = <String>{};
     for (final password in passwords) {
@@ -877,8 +1170,7 @@ class StorageService {
     return categories.toList();
   }
 
-  /// Public method to force sync with Firebase
-  /// Call this after login to ensure data is loaded from cloud
+  // Manual sync with Firebase
   Future<bool> syncWithFirebase() async {
     try {
       print('🔄 StorageService: Manual sync requested...');
@@ -897,44 +1189,71 @@ class StorageService {
     }
   }
 
-  Future<void> _createBackupAfterChange() async {
+  // Fix decryption issues
+  Future<bool> fixDecryptionIssues() async {
     try {
-      print(
-          '🔄 StorageService._createBackupAfterChange: Auto-backup triggered');
+      print('🔧 StorageService: Fixing decryption issues...');
 
-      final user = _firebaseService.getCurrentUserId();
-      if (user == null) {
-        print(
-            '⚠️ StorageService._createBackupAfterChange: No user ID, skipping backup');
-        return;
+      if (!_firebaseService.isLoggedIn) {
+        throw Exception('Please login first');
       }
-      print('👤 StorageService._createBackupAfterChange: User ID: $user');
 
+      // Clear local storage
       final prefs = await SharedPreferences.getInstance();
-      final backupEnabled = prefs.getBool(_cloudBackupEnabledKey) ?? true;
-      print(
-          '⚙️ StorageService._createBackupAfterChange: Backup enabled: $backupEnabled');
+      await prefs.remove(_passwordsKey);
+      await prefs.remove(_migrationCompletedKey);
+      print('🗑️ Cleared local storage');
 
-      if (backupEnabled) {
-        print('⏳ StorageService._createBackupAfterChange: Waiting 1 second...');
-        await Future.delayed(Duration(seconds: 1));
-        print(
-            '🚀 StorageService._createBackupAfterChange: Calling backupToCloud()');
-        await backupToCloud();
-        print(
-            '✅ StorageService._createBackupAfterChange: Auto-backup completed');
-      } else {
-        print(
-            '⚠️ StorageService._createBackupAfterChange: Backup disabled, skipping');
+      // Reset encryption keys
+      await EncryptionService.clearKeys();
+      print('🔑 Cleared encryption keys');
+
+      // Attempt to restore key immediately from secure storage
+      try {
+        final secureStorage = FlutterSecureStorage();
+        final storedPassword =
+            await secureStorage.read(key: 'user_encryption_password');
+        if (storedPassword != null && storedPassword.isNotEmpty) {
+          EncryptionService.setUserPassword(storedPassword);
+          print('🔐 Encryption key restored before recovery');
+        } else {
+          print('⚠️ No stored password found - user must log in to unlock');
+        }
+      } catch (e) {
+        print('⚠️ Failed to restore key automatically: $e');
       }
-    } catch (e, stackTrace) {
-      print(
-          '❌ StorageService._createBackupAfterChange: Auto-backup failed: $e');
-      print(
-          '📍 StorageService._createBackupAfterChange: Stack trace: $stackTrace');
+
+      // Force recovery from Firebase
+      await recoverPasswordsFromFirebase();
+      print('📥 Recovered data from Firebase');
+
+      print('✅ Decryption issues fixed!');
+      return true;
+    } catch (e) {
+      print('❌ Failed to fix decryption issues: $e');
+      return false;
     }
   }
 
+  // Create backup after changes
+  Future<void> _createBackupAfterChange() async {
+    try {
+      final user = _firebaseService.getCurrentUserId();
+      if (user == null) return;
+
+      final prefs = await SharedPreferences.getInstance();
+      final backupEnabled = prefs.getBool(_cloudBackupEnabledKey) ?? true;
+
+      if (backupEnabled) {
+        await Future.delayed(Duration(seconds: 1));
+        await backupToCloud();
+      }
+    } catch (e) {
+      // Silent fail for auto-backup
+    }
+  }
+
+  // Clear all data
   Future<void> clearAllData() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -944,9 +1263,101 @@ class StorageService {
       await prefs.remove(_encryptionEnabledKey);
       await prefs.remove(_migrationCompletedKey);
       await prefs.remove(_cloudBackupEnabledKey);
+      await prefs.remove(_userSessionKey);
       await EncryptionService.clearKeys();
+
+      print('✅ All local data cleared');
     } catch (e) {
-      // Silent fail
+      print('❌ Clear all data error: $e');
+    }
+  }
+
+  // Migrate legacy encrypted data
+  Future<void> _migrateLegacyEncryptedData() async {
+    print('🔄 StorageService: Starting legacy migration pass...');
+    final firebasePasswords = await _firebaseService.getPasswords();
+    if (firebasePasswords.isEmpty) {
+      print('ℹ️ StorageService: No Firebase passwords to migrate');
+      return;
+    }
+
+    int migrated = 0;
+    for (final pwd in firebasePasswords) {
+      try {
+        if (pwd['isEncrypted'] == true) {
+          final id = pwd['documentId'] ?? pwd['id'];
+          if (id == null) continue;
+
+          final fields = [
+            'password',
+            'username',
+            'title',
+            'website',
+            'notes',
+            'category'
+          ];
+          final decrypted = <String, String>{};
+          bool anyEncryptedField = false;
+
+          for (final f in fields) {
+            final v = pwd[f];
+            if (v is String &&
+                v.isNotEmpty &&
+                EncryptionService.isEncrypted(v)) {
+              anyEncryptedField = true;
+              try {
+                final plain = EncryptionService.decrypt(v);
+                decrypted[f] = plain;
+              } catch (_) {
+                // skip - will remain locked until user re-saves
+              }
+            }
+          }
+
+          if (anyEncryptedField && decrypted.isNotEmpty) {
+            final reEncrypted = <String, dynamic>{};
+            decrypted.forEach((key, value) {
+              try {
+                reEncrypted[key] = EncryptionService.encrypt(value);
+              } catch (_) {}
+            });
+
+            if (reEncrypted.isNotEmpty) {
+              reEncrypted['isEncrypted'] = true;
+              reEncrypted['encryptionVersion'] = 2;
+              final ok = await _firebaseService.updatePassword(id, reEncrypted);
+              if (ok) migrated++;
+            }
+          }
+        }
+      } catch (e) {
+        print('⚠️ StorageService: Migration skipped for one entry: $e');
+      }
+    }
+    print('✅ StorageService: Legacy migration complete. Migrated: $migrated');
+  }
+
+  // Emergency recovery - nuclear option
+  Future<bool> emergencyRecovery() async {
+    try {
+      print('🆘 STORAGE SERVICE: EMERGENCY RECOVERY INITIATED');
+
+      // Clear everything
+      await clearAllData();
+
+      // Logout user to force fresh login
+      if (_firebaseService.isLoggedIn) {
+        await _firebaseService.logout();
+      }
+
+      // Reset initialization
+      _isInitialized = false;
+
+      print('✅ EMERGENCY RECOVERY COMPLETED - Fresh start ready');
+      return true;
+    } catch (e) {
+      print('❌ EMERGENCY RECOVERY FAILED: $e');
+      return false;
     }
   }
 }

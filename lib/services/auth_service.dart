@@ -3,8 +3,11 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:local_auth/local_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'firebase_service.dart';
-import 'storage_service.dart'; // ADD IMPORT
+import 'storage_service.dart';
 import 'app_pin_service.dart';
+import 'encryption_service.dart';
+import 'native_encryption.dart';
+
 class AuthService with ChangeNotifier {
   final LocalAuthentication _localAuth = LocalAuthentication();
   final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
@@ -30,6 +33,18 @@ class AuthService with ChangeNotifier {
         _isAuthenticated = true;
         _currentUserEmail = _firebaseService.userEmail;
         print('✅ User already logged in: $_currentUserEmail');
+
+        // 🔐 CRITICAL: Restore encryption password from secure storage
+        final storedPassword =
+            await _secureStorage.read(key: 'user_encryption_password');
+        if (storedPassword != null) {
+          print('🔐 Restoring encryption keys from stored password...');
+          EncryptionService.setUserPassword(storedPassword);
+          print('✅ Encryption keys restored successfully');
+        } else {
+          print(
+              '⚠️ No stored encryption password found - user may need to re-login');
+        }
       }
 
       _isInitialized = true;
@@ -42,13 +57,34 @@ class AuthService with ChangeNotifier {
   }
 
   // Firebase User Registration
-  Future<Map<String, dynamic>> registerUser(String email, String password) async {
+  Future<Map<String, dynamic>> registerUser(
+    String email,
+    String password,
+  ) async {
     try {
+      // 🔐 CRITICAL: Set user password BEFORE Firebase registration
+      // This ensures encryption is available when creating user document
+      print('🔐 Initializing encryption with user-specific keys...');
+      EncryptionService.setUserPassword(password);
+      print('✅ User-specific encryption keys initialized');
+
       final result = await _firebaseService.registerUser(email, password);
 
       if (result['success'] == true) {
         _isAuthenticated = true;
         _currentUserEmail = email;
+
+        // Persist password for app restarts
+        await _secureStorage.write(
+          key: 'user_encryption_password',
+          value: password,
+        );
+
+        // Clear any existing local data for fresh start
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.remove('saved_passwords');
+        print('🗑️ Cleared local data for new user');
+
         notifyListeners();
       }
 
@@ -66,6 +102,28 @@ class AuthService with ChangeNotifier {
       if (result['success'] == true) {
         _isAuthenticated = true;
         _currentUserEmail = email;
+
+        // 🔐 CRITICAL: Set user password for encryption key derivation
+        // This MUST happen before any password loading/decryption
+        //
+        // 🌍 CROSS-DEVICE COMPATIBLE:
+        // Password + App Salt → PBKDF2 → Same keys on ANY device
+        // This enables: Phone → Tablet → PC backup/restore
+        print('🔐 Initializing encryption with user-specific keys...');
+        EncryptionService.setUserPassword(password);
+        print('✅ User-specific encryption keys initialized');
+        print('🌍 Keys are cross-device compatible - works on any device!');
+
+        // Store password securely for app restarts
+        await _secureStorage.write(
+            key: 'user_encryption_password', value: password);
+        print('💾 Stored encryption password securely');
+
+        // Clear any stale local data from previous user
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.remove('saved_passwords');
+        print('🗑️ Cleared stale local data');
+
         notifyListeners();
       }
 
@@ -228,10 +286,12 @@ class AuthService with ChangeNotifier {
       final hasBiometrics = availableBiometrics.isNotEmpty;
 
       // Handle different biometric types
-      final hasFingerprint = availableBiometrics.any((bio) =>
-      bio == BiometricType.strong ||
-          bio == BiometricType.weak ||
-          bio == BiometricType.fingerprint);
+      final hasFingerprint = availableBiometrics.any(
+        (bio) =>
+            bio == BiometricType.strong ||
+            bio == BiometricType.weak ||
+            bio == BiometricType.fingerprint,
+      );
 
       final hasFace = availableBiometrics.contains(BiometricType.face);
       final hasIris = availableBiometrics.contains(BiometricType.iris);
@@ -277,6 +337,14 @@ class AuthService with ChangeNotifier {
       final stored = await _secureStorage.read(key: 'master_password');
       final isValid = stored == password;
       _isAuthenticated = isValid;
+
+      // 🔐 Set user password for encryption if valid
+      if (isValid) {
+        print('🔐 Initializing encryption with user-specific keys...');
+        EncryptionService.setUserPassword(password);
+        print('✅ User-specific encryption keys initialized');
+      }
+
       notifyListeners();
       return isValid;
     } catch (e) {
@@ -296,6 +364,11 @@ class AuthService with ChangeNotifier {
     try {
       print('🚪 AuthService: Starting logout process...');
       await AppPinService().clearPinData();
+
+      // Clear stored encryption password
+      await _secureStorage.delete(key: 'user_encryption_password');
+      print('🗑️ Cleared stored encryption password');
+
       // FIRST: Clear all local data
       await StorageService().clearAllData();
 

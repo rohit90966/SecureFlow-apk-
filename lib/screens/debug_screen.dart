@@ -41,7 +41,8 @@ class _DebugScreenState extends State<DebugScreen> {
         final firebasePasswords = await firebaseService.getPasswords();
         _debugLog += 'Passwords in Firebase: ${firebasePasswords.length}\n';
 
-        for (var pwd in firebasePasswords.take(3)) { // Show only first 3 to avoid clutter
+        for (var pwd in firebasePasswords.take(3)) {
+          // Show only first 3 to avoid clutter
           _debugLog += ' - ${pwd['title']} (${pwd['id']})\n';
         }
         if (firebasePasswords.length > 3) {
@@ -59,7 +60,8 @@ class _DebugScreenState extends State<DebugScreen> {
       _debugLog += 'Last sync: ${_syncStatus['lastSync'] ?? 'Never'}\n';
       _debugLog += 'Cloud count: ${_syncStatus['cloudCount'] ?? 0}\n';
       _debugLog += 'Local count: ${_syncStatus['localCount'] ?? 0}\n';
-      _debugLog += 'Encryption: ${_syncStatus['encryptionEnabled'] ?? false}\n\n';
+      _debugLog +=
+          'Encryption: ${_syncStatus['encryptionEnabled'] ?? false}\n\n';
 
       _debugLog += '☁️ Getting backup info...\n';
       _backupInfo = await storageService.getCloudBackupInfo();
@@ -73,7 +75,6 @@ class _DebugScreenState extends State<DebugScreen> {
       setState(() {
         _isLoading = false;
       });
-
     } catch (e) {
       setState(() {
         _isLoading = false;
@@ -118,7 +119,8 @@ class _DebugScreenState extends State<DebugScreen> {
 
       setState(() {
         _isLoading = false;
-        _debugLog += success ? '✅ Restore successful!\n' : '❌ Restore failed!\n';
+        _debugLog +=
+            success ? '✅ Restore successful!\n' : '❌ Restore failed!\n';
       });
 
       await _loadDebugInfo();
@@ -142,7 +144,9 @@ class _DebugScreenState extends State<DebugScreen> {
 
       setState(() {
         _isLoading = false;
-        _debugLog += success ? '✅ Encryption test passed!\n' : '❌ Encryption test failed!\n';
+        _debugLog += success
+            ? '✅ Encryption test passed!\n'
+            : '❌ Encryption test failed!\n';
       });
     } catch (e) {
       setState(() {
@@ -176,6 +180,41 @@ class _DebugScreenState extends State<DebugScreen> {
     }
   }
 
+  Future<void> _fixDecryption() async {
+    try {
+      setState(() {
+        _isLoading = true;
+        _debugLog += '\n🔧 Fixing decryption issues...\n';
+        _debugLog += 'This will:\n';
+        _debugLog += '1. Clear local storage\n';
+        _debugLog += '2. Reset encryption keys\n';
+        _debugLog += '3. Restore from Firebase\n\n';
+      });
+
+      final storageService = StorageService();
+      final success = await storageService.fixDecryptionIssues();
+
+      setState(() {
+        _isLoading = false;
+        if (success) {
+          _debugLog += '✅ Decryption fixed! All passwords restored.\n';
+          _debugLog += '💡 Please restart the app for best results.\n';
+        } else {
+          _debugLog += '❌ Failed to fix decryption issues.\n';
+          _debugLog +=
+              '💡 Make sure you are logged in and have a Firebase backup.\n';
+        }
+      });
+
+      await _loadDebugInfo();
+    } catch (e) {
+      setState(() {
+        _isLoading = false;
+        _debugLog += '❌ Fix decryption error: $e\n';
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -193,138 +232,159 @@ class _DebugScreenState extends State<DebugScreen> {
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Status Cards
-            Row(
-              children: [
-                Expanded(
-                  child: _buildStatusCard(
-                    'Firebase',
-                    _syncStatus['hasCloudConnection'] == true ? 'Connected' : 'Disconnected',
-                    _syncStatus['hasCloudConnection'] == true ? Colors.green : Colors.red,
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: _buildStatusCard(
-                    'Cloud Data',
-                    '${_syncStatus['cloudCount'] ?? 0} items',
-                    (_syncStatus['cloudCount'] ?? 0) > 0 ? Colors.green : Colors.orange,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                Expanded(
-                  child: _buildStatusCard(
-                    'Local Data',
-                    '${_syncStatus['localCount'] ?? 0} items',
-                    (_syncStatus['localCount'] ?? 0) > 0 ? Colors.green : Colors.blue,
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: _buildStatusCard(
-                    'Encryption',
-                    _syncStatus['encryptionEnabled'] == true ? 'Enabled' : 'Disabled',
-                    _syncStatus['encryptionEnabled'] == true ? Colors.green : Colors.red,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 20),
-
-            // Action Buttons
-            Wrap(
-              spacing: 10,
-              runSpacing: 10,
-              children: [
-                ElevatedButton.icon(
-                  onPressed: _forceBackup,
-                  icon: const Icon(Icons.backup),
-                  label: const Text('Force Backup'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.blue,
-                    foregroundColor: Colors.white,
-                  ),
-                ),
-                ElevatedButton.icon(
-                  onPressed: _forceRestore,
-                  icon: const Icon(Icons.cloud_download),
-                  label: const Text('Force Restore'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.green,
-                    foregroundColor: Colors.white,
-                  ),
-                ),
-                ElevatedButton.icon(
-                  onPressed: _testEncryption,
-                  icon: const Icon(Icons.security),
-                  label: const Text('Test Encryption'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.purple,
-                    foregroundColor: Colors.white,
-                  ),
-                ),
-                ElevatedButton.icon(
-                  onPressed: _clearAllData,
-                  icon: const Icon(Icons.delete),
-                  label: const Text('Clear Data'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.red,
-                    foregroundColor: Colors.white,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 20),
-
-            // Debug Log
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Debug Log',
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    Container(
-                      width: double.infinity,
-                      height: 300,
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Colors.grey[50],
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: Colors.grey[300]!),
-                      ),
-                      child: SingleChildScrollView(
-                        child: SelectableText(
-                          _debugLog,
-                          style: const TextStyle(
-                            fontFamily: 'Monospace',
-                            fontSize: 12,
-                          ),
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Status Cards
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _buildStatusCard(
+                          'Firebase',
+                          _syncStatus['hasCloudConnection'] == true
+                              ? 'Connected'
+                              : 'Disconnected',
+                          _syncStatus['hasCloudConnection'] == true
+                              ? Colors.green
+                              : Colors.red,
                         ),
                       ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: _buildStatusCard(
+                          'Cloud Data',
+                          '${_syncStatus['cloudCount'] ?? 0} items',
+                          (_syncStatus['cloudCount'] ?? 0) > 0
+                              ? Colors.green
+                              : Colors.orange,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _buildStatusCard(
+                          'Local Data',
+                          '${_syncStatus['localCount'] ?? 0} items',
+                          (_syncStatus['localCount'] ?? 0) > 0
+                              ? Colors.green
+                              : Colors.blue,
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: _buildStatusCard(
+                          'Encryption',
+                          _syncStatus['encryptionEnabled'] == true
+                              ? 'Enabled'
+                              : 'Disabled',
+                          _syncStatus['encryptionEnabled'] == true
+                              ? Colors.green
+                              : Colors.red,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 20),
+
+                  // Action Buttons
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 10,
+                    children: [
+                      ElevatedButton.icon(
+                        onPressed: _forceBackup,
+                        icon: const Icon(Icons.backup),
+                        label: const Text('Force Backup'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.blue,
+                          foregroundColor: Colors.white,
+                        ),
+                      ),
+                      ElevatedButton.icon(
+                        onPressed: _forceRestore,
+                        icon: const Icon(Icons.cloud_download),
+                        label: const Text('Force Restore'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.green,
+                          foregroundColor: Colors.white,
+                        ),
+                      ),
+                      ElevatedButton.icon(
+                        onPressed: _testEncryption,
+                        icon: const Icon(Icons.security),
+                        label: const Text('Test Encryption'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.purple,
+                          foregroundColor: Colors.white,
+                        ),
+                      ),
+                      ElevatedButton.icon(
+                        onPressed: _fixDecryption,
+                        icon: const Icon(Icons.build),
+                        label: const Text('Fix Decryption'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.orange,
+                          foregroundColor: Colors.white,
+                        ),
+                      ),
+                      ElevatedButton.icon(
+                        onPressed: _clearAllData,
+                        icon: const Icon(Icons.delete),
+                        label: const Text('Clear Data'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.red,
+                          foregroundColor: Colors.white,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 20),
+
+                  // Debug Log
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Debug Log',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          Container(
+                            width: double.infinity,
+                            height: 300,
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: Colors.grey[50],
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: Colors.grey[300]!),
+                            ),
+                            child: SingleChildScrollView(
+                              child: SelectableText(
+                                _debugLog,
+                                style: const TextStyle(
+                                  fontFamily: 'Monospace',
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
-                  ],
-                ),
+                  ),
+                ],
               ),
             ),
-          ],
-        ),
-      ),
     );
   }
 

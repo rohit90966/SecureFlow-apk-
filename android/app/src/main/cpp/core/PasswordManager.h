@@ -46,7 +46,7 @@
 #ifndef PASSWORD_MANAGER_H
 #define PASSWORD_MANAGER_H
 
-#include "PasswordEntry.h"
+#include "../models/PasswordEntry.h"
 #include "PasswordGenerator.h"
 #include <vector>
 #include <string>

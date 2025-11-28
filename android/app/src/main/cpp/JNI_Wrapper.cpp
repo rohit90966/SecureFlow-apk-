@@ -2,7 +2,7 @@
 #include <string>
 #include <sstream>
 #include "core/PasswordManager.h"
-#include "core/PasswordEntry.h"
+#include "models/PasswordEntry.h"
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_example_advanced_1password_1manager_NativePasswordService_createManager(
